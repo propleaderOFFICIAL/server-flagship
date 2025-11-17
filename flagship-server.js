@@ -5,22 +5,35 @@ const bodyParser = require('body-parser');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Middleware per logging di TUTTE le richieste
+app.use((req, res, next) => {
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`📥 [${new Date().toISOString()}] ${req.method} ${req.path}`);
+  console.log(`🌐 IP: ${req.ip}`);
+  console.log(`📋 Query:`, JSON.stringify(req.query, null, 2));
+  if(req.body && Object.keys(req.body).length > 0) {
+    console.log(`📦 Body:`, JSON.stringify(req.body, null, 2));
+  }
+  console.log(`${'='.repeat(60)}`);
+  next();
+});
+
 // Configurazione
 app.use(cors());
 app.use(bodyParser.json());
 
 // Database in memoria
 let currentTrend = {
-  direction: 'NONE',           // BUY, SELL, ENTRAMBI, NONE
-  isActive: false,             // true = start, false = stop
-  forceClose: false,           // comando di chiusura forzata
+  direction: 'NONE',
+  isActive: false,
+  forceClose: false,
   lastUpdate: null,
   controllerInfo: {}
 };
 
-let connectedBots = new Map();       // botKey -> ultimo accesso
-let recentCommands = [];             // comandi recenti (trend_change, start_stop, force_close)
-let controllerAccountInfo = {};      // ultima informazione account Controller
+let connectedBots = new Map();
+let recentCommands = [];
+let controllerAccountInfo = {};
 
 // Chiavi di sicurezza
 const CONTROLLER_KEY = "controller_flagship_key_2025";
@@ -28,16 +41,22 @@ const BOT_KEY = "bot_flagship_access_2026_secure_alpha92";
 
 // Middleware per autenticazione Bot
 function authenticateBot(req, res, next) {
+  console.log(`🔐 Autenticazione Bot...`);
   const { botkey } = req.query;
   
+  console.log(`🔑 Bot Key ricevuta: ${botkey ? botkey.substring(0, 20) + '...' : 'NESSUNA'}`);
+  console.log(`🔑 Bot Key attesa: ${BOT_KEY.substring(0, 20)}...`);
+  
   if (!botkey || botkey !== BOT_KEY) {
+    console.log(`❌ Autenticazione FALLITA - Key non valida`);
     return res.status(401).json({ 
       error: 'Unauthorized', 
       message: 'Valid bot key required' 
     });
   }
   
-  // Registra accesso bot
+  console.log(`✅ Autenticazione RIUSCITA`);
+  
   const botId = req.ip + '_' + (req.headers['user-agent'] || 'unknown');
   connectedBots.set(botId, {
     lastAccess: new Date(),
@@ -45,10 +64,11 @@ function authenticateBot(req, res, next) {
     userAgent: req.headers['user-agent']
   });
   
+  console.log(`🤖 Bot registrato: ${botId.substring(0, 30)}...`);
+  
   next();
 }
 
-// Funzione per aggiornare informazioni account Controller
 function updateControllerAccountInfo(accountData) {
   if (accountData && typeof accountData === 'object') {
     controllerAccountInfo = {
@@ -60,10 +80,35 @@ function updateControllerAccountInfo(accountData) {
 }
 
 //+------------------------------------------------------------------+
-//| ENDPOINT 1: Health Check                                        |
+//| ENDPOINT 0: Root - Test Base                                    |
+//+------------------------------------------------------------------+
+app.get('/', (req, res) => {
+  console.log(`🏠 Root endpoint chiamato`);
+  res.json({
+    message: 'Flagship Trend Server v1.0',
+    status: 'online',
+    timestamp: new Date().toISOString()
+  });
+});
+
+//+------------------------------------------------------------------+
+//| ENDPOINT 1: Health Check SEMPLICE                               |
+//+------------------------------------------------------------------+
+app.get('/health', (req, res) => {
+  console.log(`💚 Health check SEMPLICE chiamato`);
+  res.json({ 
+    status: 'ok', 
+    timestamp: Date.now(),
+    uptime: process.uptime()
+  });
+});
+
+//+------------------------------------------------------------------+
+//| ENDPOINT 1b: Health Check COMPLETO                              |
 //+------------------------------------------------------------------+
 app.get('/api/health', (req, res) => {
-  res.json({
+  console.log(`💚 Health check COMPLETO chiamato`);
+  const response = {
     status: 'online',
     time: new Date(),
     currentTrend: currentTrend.direction,
@@ -72,27 +117,35 @@ app.get('/api/health', (req, res) => {
     connectedBots: connectedBots.size,
     recentCommands: recentCommands.length,
     controllerAccount: controllerAccountInfo.number || 'N/A'
-  });
+  };
+  console.log(`📤 Health response:`, JSON.stringify(response, null, 2));
+  res.json(response);
 });
 
 //+------------------------------------------------------------------+
 //| ENDPOINT 2: Controller invia comandi                            |
 //+------------------------------------------------------------------+
 app.post('/api/commands', (req, res) => {
+  console.log(`🎮 Controller commands ricevuto`);
+  
   const {
     controllerkey, action, trend, active, forceclose, account
   } = req.body;
 
+  console.log(`🔑 Controller key check: ${controllerkey === CONTROLLER_KEY ? 'OK' : 'FAIL'}`);
+
   if (controllerkey !== CONTROLLER_KEY) {
+    console.log(`❌ Controller key non valida`);
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
   const timestamp = new Date();
+  console.log(`📝 Action: ${action}`);
 
   if (action === 'trend_change') {
-    // Cambio direzione trend
     const validTrends = ['BUY', 'SELL', 'ENTRAMBI', 'NONE'];
     if (!validTrends.includes(trend)) {
+      console.log(`❌ Trend non valido: ${trend}`);
       return res.status(400).json({ error: 'Invalid trend direction' });
     }
 
@@ -100,7 +153,6 @@ app.post('/api/commands', (req, res) => {
     currentTrend.direction = trend;
     currentTrend.lastUpdate = timestamp;
 
-    // Aggiungi comando agli eventi recenti
     recentCommands.push({
       commandType: 'trend_change',
       action: 'trend_change',
@@ -113,13 +165,11 @@ app.post('/api/commands', (req, res) => {
     console.log(`📈 TREND CAMBIATO: ${oldTrend} -> ${trend}`);
 
   } else if (action === 'start_stop') {
-    // Avvio/stop EA
     const isStart = active === true || active === 'true';
     const oldStatus = currentTrend.isActive;
     currentTrend.isActive = isStart;
     currentTrend.lastUpdate = timestamp;
 
-    // Aggiungi comando agli eventi recenti
     recentCommands.push({
       commandType: 'start_stop',
       action: 'start_stop',
@@ -133,12 +183,10 @@ app.post('/api/commands', (req, res) => {
     console.log(`🎮 EA ${isStart ? 'AVVIATO' : 'FERMATO'}`);
 
   } else if (action === 'force_close') {
-    // Comando di chiusura forzata
     const shouldClose = forceclose === true || forceclose === 'true';
     currentTrend.forceClose = shouldClose;
     currentTrend.lastUpdate = timestamp;
 
-    // Aggiungi comando agli eventi recenti
     recentCommands.push({
       commandType: 'force_close',
       action: 'force_close',
@@ -149,7 +197,6 @@ app.post('/api/commands', (req, res) => {
     if (account) updateControllerAccountInfo(account);
     console.log(`🔴 FORZA CHIUSURA: ${shouldClose ? 'ATTIVATO' : 'DISATTIVATO'}`);
 
-    // Reset automatico del flag dopo 5 secondi
     if (shouldClose) {
       setTimeout(() => {
         currentTrend.forceClose = false;
@@ -158,7 +205,6 @@ app.post('/api/commands', (req, res) => {
     }
 
   } else if (action === 'status_update') {
-    // Aggiornamento completo dello stato
     const validTrends = ['BUY', 'SELL', 'ENTRAMBI', 'NONE'];
     
     if (trend && validTrends.includes(trend)) {
@@ -175,7 +221,6 @@ app.post('/api/commands', (req, res) => {
     
     currentTrend.lastUpdate = timestamp;
 
-    // Aggiungi comando agli eventi recenti
     recentCommands.push({
       commandType: 'status_update',
       action: 'status_update',
@@ -189,12 +234,11 @@ app.post('/api/commands', (req, res) => {
     console.log(`🔄 STATO AGGIORNATO: Trend=${currentTrend.direction}, Active=${currentTrend.isActive}, ForceClose=${currentTrend.forceClose}`);
   }
 
-  // Mantieni ultimi 50 comandi
   if (recentCommands.length > 50) {
     recentCommands = recentCommands.slice(-50);
   }
 
-  res.json({ 
+  const responseData = { 
     status: 'success',
     currentState: {
       trend: currentTrend.direction,
@@ -202,14 +246,20 @@ app.post('/api/commands', (req, res) => {
       forceClose: currentTrend.forceClose,
       lastUpdate: currentTrend.lastUpdate
     }
-  });
+  };
+  
+  console.log(`📤 Response:`, JSON.stringify(responseData, null, 2));
+  res.json(responseData);
 });
 
 //+------------------------------------------------------------------+
-//| ENDPOINT 3: Bot riceve comandi (CON AUTENTICAZIONE BOT)         |
+//| ENDPOINT 3: Bot riceve comandi                                  |
 //+------------------------------------------------------------------+
 app.get('/api/getcommands', authenticateBot, (req, res) => {
+  console.log(`🤖 Bot richiede comandi`);
+  
   const { lastsync } = req.query;
+  console.log(`🕐 Last sync: ${lastsync || 'NONE'}`);
   
   const response = {
     currentTrend: currentTrend,
@@ -218,33 +268,36 @@ app.get('/api/getcommands', authenticateBot, (req, res) => {
     serverTime: Date.now()
   };
 
-  // Filtra comandi recenti se lastsync è specificato
   if (lastsync) {
     const syncTime = new Date(parseInt(lastsync));
     response.recentCommands = recentCommands.filter(cmd => cmd.timestamp > syncTime);
+    console.log(`📋 Comandi filtrati dopo ${syncTime}: ${response.recentCommands.length}`);
   } else {
     response.recentCommands = recentCommands;
+    console.log(`📋 Tutti i comandi recenti: ${response.recentCommands.length}`);
   }
 
-  console.log(`📤 Comandi inviati a BOT: trend=${currentTrend.direction}, active=${currentTrend.isActive}, forceClose=${currentTrend.forceClose}, recentCommands=${response.recentCommands.length}`);
+  console.log(`📤 Comandi inviati a BOT:`);
+  console.log(`   - Trend: ${currentTrend.direction}`);
+  console.log(`   - Active: ${currentTrend.isActive}`);
+  console.log(`   - ForceClose: ${currentTrend.forceClose}`);
+  console.log(`   - Recent Commands: ${response.recentCommands.length}`);
 
   res.json(response);
 });
 
 //+------------------------------------------------------------------+
-//| ENDPOINT 4: Bot notifica esecuzione comando (CON AUTH)          |
+//| ENDPOINT 4: Bot conferma                                        |
 //+------------------------------------------------------------------+
 app.post('/api/bot-confirm', authenticateBot, (req, res) => {
+  console.log(`✅ Bot conferma esecuzione`);
+  
   const { commandType, status, message } = req.body;
   
-  const confirmation = {
-    commandType,
-    status,
-    message,
-    timestamp: new Date()
-  };
-
-  // Aggiungi conferma agli eventi recenti
+  console.log(`   - Command Type: ${commandType}`);
+  console.log(`   - Status: ${status}`);
+  console.log(`   - Message: ${message}`);
+  
   recentCommands.push({
     commandType: 'bot_confirmation',
     action: 'bot_confirm',
@@ -254,16 +307,17 @@ app.post('/api/bot-confirm', authenticateBot, (req, res) => {
     timestamp: new Date()
   });
 
-  console.log(`✅ BOT CONFERMA: ${commandType} -> ${status} (${message || 'no message'})`);
+  console.log(`✅ BOT CONFERMA REGISTRATA`);
   
   res.json({ status: 'confirmed' });
 });
 
 //+------------------------------------------------------------------+
-//| ENDPOINT 5: Statistiche dettagliate                             |
+//| ENDPOINT 5: Statistiche                                         |
 //+------------------------------------------------------------------+
 app.get('/api/stats', (req, res) => {
-  // Pulisci bot disconnessi (oltre 5 minuti)
+  console.log(`📊 Stats richieste`);
+  
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
   connectedBots.forEach((data, botId) => {
     if (data.lastAccess < fiveMinutesAgo) {
@@ -271,7 +325,6 @@ app.get('/api/stats', (req, res) => {
     }
   });
 
-  // Statistiche comandi
   const commandStats = {};
   recentCommands.forEach(cmd => {
     const type = cmd.commandType || 'unknown';
@@ -300,10 +353,13 @@ app.get('/api/stats', (req, res) => {
 });
 
 //+------------------------------------------------------------------+
-//| ENDPOINT 6: Reset completo                                      |
+//| ENDPOINT 6: Reset                                               |
 //+------------------------------------------------------------------+
 app.post('/api/reset', (req, res) => {
+  console.log(`🧹 Reset richiesto`);
+  
   if (req.body.controllerkey !== CONTROLLER_KEY) {
+    console.log(`❌ Reset fallito: controller key non valida`);
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -324,9 +380,11 @@ app.post('/api/reset', (req, res) => {
 });
 
 //+------------------------------------------------------------------+
-//| ENDPOINT 7: Debug - Stato interno                               |
+//| ENDPOINT 7: Debug                                               |
 //+------------------------------------------------------------------+
 app.get('/api/debug', (req, res) => {
+  console.log(`🐛 Debug info richieste`);
+  
   res.json({
     currentTrend,
     recentCommands,
@@ -339,9 +397,12 @@ app.get('/api/debug', (req, res) => {
 //| ENDPOINT 8: Verifica chiave bot                                 |
 //+------------------------------------------------------------------+
 app.post('/api/verify-bot', (req, res) => {
+  console.log(`🔐 Verifica bot key`);
+  
   const { botkey } = req.body;
   
   if (botkey === BOT_KEY) {
+    console.log(`✅ Bot key valida`);
     res.json({ 
       status: 'authorized',
       message: 'Bot key valid',
@@ -349,6 +410,7 @@ app.post('/api/verify-bot', (req, res) => {
       currentTrend: currentTrend
     });
   } else {
+    console.log(`❌ Bot key non valida`);
     res.status(401).json({ 
       status: 'unauthorized',
       message: 'Invalid bot key'
@@ -360,6 +422,8 @@ app.post('/api/verify-bot', (req, res) => {
 //| ENDPOINT 9: Stato rapido trend                                  |
 //+------------------------------------------------------------------+
 app.get('/api/trend-status', authenticateBot, (req, res) => {
+  console.log(`⚡ Trend status rapido richiesto`);
+  
   res.json({
     trend: currentTrend.direction,
     active: currentTrend.isActive,
@@ -371,25 +435,38 @@ app.get('/api/trend-status', authenticateBot, (req, res) => {
 
 // Avvia server
 app.listen(PORT, () => {
-  console.log(`🚀 Prop Leader - Flagship Trend Server v1.0 avviato su port ${PORT}`);
+  console.log(`\n${'🚀'.repeat(30)}`);
+  console.log(`🚀 Prop Leader - Flagship Trend Server v1.0 AVVIATO`);
+  console.log(`📡 Port: ${PORT}`);
+  console.log(`🕐 Timestamp: ${new Date().toISOString()}`);
+  console.log(`${'🚀'.repeat(30)}\n`);
+  
   console.log(`📋 Endpoints disponibili:`);
-  console.log(`   GET  /api/health           - Health check`);
-  console.log(`   POST /api/commands         - Ricevi comandi dal Controller`);
-  console.log(`   GET  /api/getcommands      - Ottieni comandi per Bot (AUTH)`);
-  console.log(`   POST /api/bot-confirm      - Bot conferma esecuzione (AUTH)`);
-  console.log(`   GET  /api/stats            - Statistiche dettagliate`);
-  console.log(`   GET  /api/trend-status     - Stato rapido trend (AUTH)`);
+  console.log(`   GET  /                     - Root test`);
+  console.log(`   GET  /health               - Health check semplice`);
+  console.log(`   GET  /api/health           - Health check completo`);
+  console.log(`   POST /api/commands         - Comandi Controller`);
+  console.log(`   GET  /api/getcommands      - Comandi Bot (AUTH)`);
+  console.log(`   POST /api/bot-confirm      - Conferma Bot (AUTH)`);
+  console.log(`   GET  /api/stats            - Statistiche`);
+  console.log(`   GET  /api/trend-status     - Status rapido (AUTH)`);
   console.log(`   POST /api/reset            - Reset completo`);
-  console.log(`   GET  /api/debug            - Debug stato interno`);
-  console.log(`   POST /api/verify-bot       - Verifica chiave bot`);
+  console.log(`   GET  /api/debug            - Debug info`);
+  console.log(`   POST /api/verify-bot       - Verifica chiave bot\n`);
+  
   console.log(`🔐 SICUREZZA ATTIVA:`);
   console.log(`   Controller Key: ${CONTROLLER_KEY}`);
-  console.log(`   Bot Key:       ${BOT_KEY}`);
-  console.log(`💡 LOGICA: Controllo Trend (BUY/SELL/ENTRAMBI) + Start/Stop + Force Close`);
-  console.log(`🤖 Target Bot: Prop Leader - Flagship`);
+  console.log(`   Bot Key:        ${BOT_KEY}\n`);
+  
+  console.log(`💡 STATO INIZIALE:`);
+  console.log(`   Trend: ${currentTrend.direction}`);
+  console.log(`   Active: ${currentTrend.isActive}`);
+  console.log(`   ForceClose: ${currentTrend.forceClose}\n`);
+  
+  console.log(`✅ Server pronto per ricevere richieste!\n`);
 });
 
-// Pulizia automatica comandi vecchi ogni 6 ore
+// Pulizia automatica
 setInterval(() => {
   const cutoff = new Date(Date.now() - 6 * 60 * 60 * 1000);
   const before = recentCommands.length;
@@ -399,7 +476,6 @@ setInterval(() => {
     console.log(`🧹 Pulizia automatica: rimossi ${before - recentCommands.length} comandi vecchi`);
   }
   
-  // Pulisci anche bot disconnessi
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
   const botsBefore = connectedBots.size;
   connectedBots.forEach((data, botId) => {
