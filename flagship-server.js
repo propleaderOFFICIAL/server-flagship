@@ -5,19 +5,6 @@ const bodyParser = require('body-parser');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware per logging di TUTTE le richieste
-app.use((req, res, next) => {
-  console.log(`\n${'='.repeat(60)}`);
-  console.log(`📥 [${new Date().toISOString()}] ${req.method} ${req.path}`);
-  console.log(`🌐 IP: ${req.ip}`);
-  console.log(`📋 Query:`, JSON.stringify(req.query, null, 2));
-  if(req.body && Object.keys(req.body).length > 0) {
-    console.log(`📦 Body:`, JSON.stringify(req.body, null, 2));
-  }
-  console.log(`${'='.repeat(60)}`);
-  next();
-});
-
 // Configurazione
 app.use(cors());
 app.use(bodyParser.json());
@@ -31,44 +18,38 @@ let currentTrend = {
   controllerInfo: {}
 };
 
+// ✨ NUOVE STRUTTURE
+let remoteTrades = [];              // Array di trade da aprire (auto-expire 5sec)
+let breakEvenCommand = {            // Comando BE attivo
+  active: false,
+  timestamp: null
+};
+
 let connectedBots = new Map();
 let recentCommands = [];
 let controllerAccountInfo = {};
 
 // Chiavi di sicurezza
 const CONTROLLER_KEY = "controller_flagship_key_2025";
-const BOT_KEYS = [
-  "bot_flagship_access_2026_secure_alpha92",
-  "bot_flagship_access_2025_secure"
-];
+const BOT_KEY = "bot_flagship_access_2026_secure_alpha92";
 
 // Middleware per autenticazione Bot
 function authenticateBot(req, res, next) {
-  console.log(`🔐 Autenticazione Bot...`);
   const { botkey } = req.query;
   
-  console.log(`🔑 Bot Key ricevuta: ${botkey || 'NESSUNA'}`);
-  console.log(`🔑 Bot Keys valide: ${BOT_KEYS.join(', ')}`);
-  
-  if (!botkey || !BOT_KEYS.includes(botkey)) {
-    console.log(`❌ Autenticazione FALLITA - Key non valida`);
+  if (!botkey || botkey !== BOT_KEY) {
     return res.status(401).json({ 
       error: 'Unauthorized', 
       message: 'Valid bot key required' 
     });
   }
   
-  console.log(`✅ Autenticazione RIUSCITA con chiave: ${botkey}`);
-  
   const botId = req.ip + '_' + (req.headers['user-agent'] || 'unknown');
   connectedBots.set(botId, {
     lastAccess: new Date(),
     ip: req.ip,
-    userAgent: req.headers['user-agent'],
-    botKey: botkey // Salva quale chiave è stata usata
+    userAgent: req.headers['user-agent']
   });
-  
-  console.log(`🤖 Bot registrato: ${botId}`);
   
   next();
 }
@@ -84,35 +65,10 @@ function updateControllerAccountInfo(accountData) {
 }
 
 //+------------------------------------------------------------------+
-//| ENDPOINT 0: Root - Test Base                                    |
-//+------------------------------------------------------------------+
-app.get('/', (req, res) => {
-  console.log(`🏠 Root endpoint chiamato`);
-  res.json({
-    message: 'Flagship Trend Server v1.0',
-    status: 'online',
-    timestamp: new Date().toISOString()
-  });
-});
-
-//+------------------------------------------------------------------+
-//| ENDPOINT 1: Health Check SEMPLICE                               |
-//+------------------------------------------------------------------+
-app.get('/health', (req, res) => {
-  console.log(`💚 Health check SEMPLICE chiamato`);
-  res.json({ 
-    status: 'ok', 
-    timestamp: Date.now(),
-    uptime: process.uptime()
-  });
-});
-
-//+------------------------------------------------------------------+
-//| ENDPOINT 1b: Health Check COMPLETO                              |
+//| ENDPOINT 1: Health Check                                        |
 //+------------------------------------------------------------------+
 app.get('/api/health', (req, res) => {
-  console.log(`💚 Health check COMPLETO chiamato`);
-  const response = {
+  res.json({
     status: 'online',
     time: new Date(),
     currentTrend: currentTrend.direction,
@@ -120,36 +76,30 @@ app.get('/api/health', (req, res) => {
     forceClose: currentTrend.forceClose,
     connectedBots: connectedBots.size,
     recentCommands: recentCommands.length,
+    remoteTrades: remoteTrades.length,
+    breakEvenActive: breakEvenCommand.active,
     controllerAccount: controllerAccountInfo.number || 'N/A'
-  };
-  console.log(`📤 Health response:`, JSON.stringify(response, null, 2));
-  res.json(response);
+  });
 });
 
 //+------------------------------------------------------------------+
-//| ENDPOINT 2: Controller invia comandi                            |
+//| ENDPOINT 2: Controller invia comandi (ESTESO)                   |
 //+------------------------------------------------------------------+
 app.post('/api/commands', (req, res) => {
-  console.log(`🎮 Controller commands ricevuto`);
-  
   const {
-    controllerkey, action, trend, active, forceclose, account
+    controllerkey, action, trend, active, forceclose, account,
+    tradeType, profitTarget  // ✨ Nuovi parametri
   } = req.body;
 
-  console.log(`🔑 Controller key check: ${controllerkey === CONTROLLER_KEY ? 'OK' : 'FAIL'}`);
-
   if (controllerkey !== CONTROLLER_KEY) {
-    console.log(`❌ Controller key non valida`);
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
   const timestamp = new Date();
-  console.log(`📝 Action: ${action}`);
 
   if (action === 'trend_change') {
     const validTrends = ['BUY', 'SELL', 'ENTRAMBI', 'NONE'];
     if (!validTrends.includes(trend)) {
-      console.log(`❌ Trend non valido: ${trend}`);
       return res.status(400).json({ error: 'Invalid trend direction' });
     }
 
@@ -208,7 +158,66 @@ app.post('/api/commands', (req, res) => {
       }, 5000);
     }
 
-  } else if (action === 'status_update') {
+  } 
+  // ✨ NUOVO: Remote Trade Signal
+  else if (action === 'remote_trade') {
+    if (!tradeType || !['BUY', 'SELL'].includes(tradeType)) {
+      return res.status(400).json({ error: 'Invalid trade type (BUY/SELL required)' });
+    }
+
+    const tradeSignal = {
+      id: Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+      type: tradeType,
+      timestamp: timestamp,
+      expires: new Date(Date.now() + 5000), // Auto-expire in 5 secondi
+      executed: false
+    };
+
+    remoteTrades.push(tradeSignal);
+
+    recentCommands.push({
+      commandType: 'remote_trade',
+      action: 'remote_trade',
+      tradeId: tradeSignal.id,
+      tradeType: tradeType,
+      timestamp
+    });
+
+    console.log(`🚀 REMOTE TRADE: ${tradeType} - ID: ${tradeSignal.id} (expires in 5s)`);
+
+    // Auto-rimozione dopo 5 secondi
+    setTimeout(() => {
+      const index = remoteTrades.findIndex(t => t.id === tradeSignal.id);
+      if (index >= 0 && !remoteTrades[index].executed) {
+        remoteTrades.splice(index, 1);
+        console.log(`⏰ REMOTE TRADE EXPIRED: ${tradeSignal.id}`);
+      }
+    }, 5000);
+
+  }
+  // ✨ NUOVO: Break Even Command
+  else if (action === 'breakeven_close') {
+    breakEvenCommand.active = true;
+    breakEvenCommand.timestamp = timestamp;
+
+    recentCommands.push({
+      commandType: 'breakeven_close',
+      action: 'breakeven_close',
+      timestamp
+    });
+
+    console.log(`⚖️ BREAKEVEN CLOSE: Attivato`);
+
+    // Reset automatico dopo 10 secondi (il bot deve confermare prima)
+    setTimeout(() => {
+      if (breakEvenCommand.active) {
+        breakEvenCommand.active = false;
+        console.log(`🔄 BREAKEVEN CLOSE: Reset automatico`);
+      }
+    }, 10000);
+
+  }
+  else if (action === 'status_update') {
     const validTrends = ['BUY', 'SELL', 'ENTRAMBI', 'NONE'];
     
     if (trend && validTrends.includes(trend)) {
@@ -238,36 +247,39 @@ app.post('/api/commands', (req, res) => {
     console.log(`🔄 STATO AGGIORNATO: Trend=${currentTrend.direction}, Active=${currentTrend.isActive}, ForceClose=${currentTrend.forceClose}`);
   }
 
+  // Mantieni ultimi 50 comandi
   if (recentCommands.length > 50) {
     recentCommands = recentCommands.slice(-50);
   }
 
-  const responseData = { 
+  res.json({ 
     status: 'success',
     currentState: {
       trend: currentTrend.direction,
       active: currentTrend.isActive,
       forceClose: currentTrend.forceClose,
+      breakEvenActive: breakEvenCommand.active,
+      pendingTrades: remoteTrades.length,
       lastUpdate: currentTrend.lastUpdate
     }
-  };
-  
-  console.log(`📤 Response:`, JSON.stringify(responseData, null, 2));
-  res.json(responseData);
+  });
 });
 
 //+------------------------------------------------------------------+
-//| ENDPOINT 3: Bot riceve comandi                                  |
+//| ENDPOINT 3: Bot riceve comandi (ESTESO)                         |
 //+------------------------------------------------------------------+
 app.get('/api/getcommands', authenticateBot, (req, res) => {
-  console.log(`🤖 Bot richiede comandi`);
-  
   const { lastsync } = req.query;
-  console.log(`🕐 Last sync: ${lastsync || 'NONE'}`);
+  
+  // Pulizia trade scaduti
+  const now = new Date();
+  remoteTrades = remoteTrades.filter(t => t.expires > now);
   
   const response = {
     currentTrend: currentTrend,
     recentCommands: [],
+    remoteTrades: remoteTrades.filter(t => !t.executed), // Solo non eseguiti
+    breakEvenCommand: breakEvenCommand,
     controllerAccount: controllerAccountInfo,
     serverTime: Date.now()
   };
@@ -275,33 +287,44 @@ app.get('/api/getcommands', authenticateBot, (req, res) => {
   if (lastsync) {
     const syncTime = new Date(parseInt(lastsync));
     response.recentCommands = recentCommands.filter(cmd => cmd.timestamp > syncTime);
-    console.log(`📋 Comandi filtrati dopo ${syncTime}: ${response.recentCommands.length}`);
   } else {
     response.recentCommands = recentCommands;
-    console.log(`📋 Tutti i comandi recenti: ${response.recentCommands.length}`);
   }
 
-  console.log(`📤 Comandi inviati a BOT:`);
-  console.log(`   - Trend: ${currentTrend.direction}`);
-  console.log(`   - Active: ${currentTrend.isActive}`);
-  console.log(`   - ForceClose: ${currentTrend.forceClose}`);
-  console.log(`   - Recent Commands: ${response.recentCommands.length}`);
+  console.log(`📤 Comandi inviati: trend=${currentTrend.direction}, remoteTrades=${response.remoteTrades.length}, BE=${breakEvenCommand.active}`);
 
   res.json(response);
 });
 
 //+------------------------------------------------------------------+
-//| ENDPOINT 4: Bot conferma                                        |
+//| ENDPOINT 4: Bot notifica esecuzione comando (ESTESO)            |
 //+------------------------------------------------------------------+
 app.post('/api/bot-confirm', authenticateBot, (req, res) => {
-  console.log(`✅ Bot conferma esecuzione`);
+  const { commandType, status, message, tradeId } = req.body;
   
-  const { commandType, status, message } = req.body;
-  
-  console.log(`   - Command Type: ${commandType}`);
-  console.log(`   - Status: ${status}`);
-  console.log(`   - Message: ${message}`);
-  
+  const confirmation = {
+    commandType,
+    status,
+    message,
+    tradeId,
+    timestamp: new Date()
+  };
+
+  // ✨ Se è conferma remote trade, marca come eseguito
+  if (commandType === 'remote_trade' && tradeId) {
+    const trade = remoteTrades.find(t => t.id === tradeId);
+    if (trade) {
+      trade.executed = true;
+      console.log(`✅ REMOTE TRADE EXECUTED: ${tradeId}`);
+    }
+  }
+
+  // ✨ Se è conferma BE close, disattiva comando
+  if (commandType === 'breakeven_close') {
+    breakEvenCommand.active = false;
+    console.log(`✅ BREAKEVEN CLOSE EXECUTED`);
+  }
+
   recentCommands.push({
     commandType: 'bot_confirmation',
     action: 'bot_confirm',
@@ -311,17 +334,15 @@ app.post('/api/bot-confirm', authenticateBot, (req, res) => {
     timestamp: new Date()
   });
 
-  console.log(`✅ BOT CONFERMA REGISTRATA`);
+  console.log(`✅ BOT CONFERMA: ${commandType} -> ${status} (${message || 'no message'})`);
   
   res.json({ status: 'confirmed' });
 });
 
 //+------------------------------------------------------------------+
-//| ENDPOINT 5: Statistiche                                         |
+//| ENDPOINT 5: Statistiche dettagliate                             |
 //+------------------------------------------------------------------+
 app.get('/api/stats', (req, res) => {
-  console.log(`📊 Stats richieste`);
-  
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
   connectedBots.forEach((data, botId) => {
     if (data.lastAccess < fiveMinutesAgo) {
@@ -340,31 +361,30 @@ app.get('/api/stats', (req, res) => {
       currentTrend: currentTrend.direction,
       isActive: currentTrend.isActive,
       forceClose: currentTrend.forceClose,
+      breakEvenActive: breakEvenCommand.active,
+      pendingRemoteTrades: remoteTrades.filter(t => !t.executed).length,
       lastUpdate: currentTrend.lastUpdate,
       connectedBots: connectedBots.size,
       recentCommands: recentCommands.length
     },
     commandStats,
     recentCommands: recentCommands.slice(-10),
+    remoteTrades: remoteTrades,
     controllerAccount: controllerAccountInfo,
     connectedBots: Array.from(connectedBots.entries()).map(([id, data]) => ({
       id: id.substr(0, 20) + '...',
       lastAccess: data.lastAccess,
-      ip: data.ip,
-      botKey: data.botKey
+      ip: data.ip
     })),
     serverUptime: process.uptime()
   });
 });
 
 //+------------------------------------------------------------------+
-//| ENDPOINT 6: Reset                                               |
+//| ENDPOINT 6: Reset completo                                      |
 //+------------------------------------------------------------------+
 app.post('/api/reset', (req, res) => {
-  console.log(`🧹 Reset richiesto`);
-  
   if (req.body.controllerkey !== CONTROLLER_KEY) {
-    console.log(`❌ Reset fallito: controller key non valida`);
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -376,6 +396,8 @@ app.post('/api/reset', (req, res) => {
     controllerInfo: {}
   };
   
+  remoteTrades = [];
+  breakEvenCommand = { active: false, timestamp: null };
   connectedBots.clear();
   recentCommands = [];
   controllerAccountInfo = {};
@@ -385,13 +407,13 @@ app.post('/api/reset', (req, res) => {
 });
 
 //+------------------------------------------------------------------+
-//| ENDPOINT 7: Debug                                               |
+//| ENDPOINT 7: Debug - Stato interno                               |
 //+------------------------------------------------------------------+
 app.get('/api/debug', (req, res) => {
-  console.log(`🐛 Debug info richieste`);
-  
   res.json({
     currentTrend,
+    remoteTrades,
+    breakEvenCommand,
     recentCommands,
     controllerAccount: controllerAccountInfo,
     connectedBots: Object.fromEntries(connectedBots)
@@ -402,12 +424,9 @@ app.get('/api/debug', (req, res) => {
 //| ENDPOINT 8: Verifica chiave bot                                 |
 //+------------------------------------------------------------------+
 app.post('/api/verify-bot', (req, res) => {
-  console.log(`🔐 Verifica bot key`);
-  
   const { botkey } = req.body;
   
-  if (BOT_KEYS.includes(botkey)) {
-    console.log(`✅ Bot key valida: ${botkey}`);
+  if (botkey === BOT_KEY) {
     res.json({ 
       status: 'authorized',
       message: 'Bot key valid',
@@ -415,7 +434,6 @@ app.post('/api/verify-bot', (req, res) => {
       currentTrend: currentTrend
     });
   } else {
-    console.log(`❌ Bot key non valida: ${botkey}`);
     res.status(401).json({ 
       status: 'unauthorized',
       message: 'Invalid bot key'
@@ -427,12 +445,12 @@ app.post('/api/verify-bot', (req, res) => {
 //| ENDPOINT 9: Stato rapido trend                                  |
 //+------------------------------------------------------------------+
 app.get('/api/trend-status', authenticateBot, (req, res) => {
-  console.log(`⚡ Trend status rapido richiesto`);
-  
   res.json({
     trend: currentTrend.direction,
     active: currentTrend.isActive,
     forceClose: currentTrend.forceClose,
+    breakEvenActive: breakEvenCommand.active,
+    pendingTrades: remoteTrades.filter(t => !t.executed).length,
     lastUpdate: currentTrend.lastUpdate,
     serverTime: Date.now()
   });
@@ -440,35 +458,27 @@ app.get('/api/trend-status', authenticateBot, (req, res) => {
 
 // Avvia server
 app.listen(PORT, () => {
-  console.log(`\n${'🚀'.repeat(30)}`);
-  console.log(`🚀 Prop Leader - Flagship Trend Server v1.0 AVVIATO`);
-  console.log(`📡 Port: ${PORT}`);
-  console.log(`🕐 Timestamp: ${new Date().toISOString()}`);
-  console.log(`${'🚀'.repeat(30)}\n`);
-  
+  console.log(`🚀 Prop Leader - Flagship Trend Server v2.0 avviato su port ${PORT}`);
   console.log(`📋 Endpoints disponibili:`);
-  console.log(`   GET  /                     - Root test`);
-  console.log(`   GET  /health               - Health check semplice`);
-  console.log(`   GET  /api/health           - Health check completo`);
-  console.log(`   POST /api/commands         - Comandi Controller`);
-  console.log(`   GET  /api/getcommands      - Comandi Bot (AUTH)`);
-  console.log(`   POST /api/bot-confirm      - Conferma Bot (AUTH)`);
-  console.log(`   GET  /api/stats            - Statistiche`);
-  console.log(`   GET  /api/trend-status     - Status rapido (AUTH)`);
+  console.log(`   GET  /api/health           - Health check`);
+  console.log(`   POST /api/commands         - Ricevi comandi dal Controller`);
+  console.log(`   GET  /api/getcommands      - Ottieni comandi per Bot (AUTH)`);
+  console.log(`   POST /api/bot-confirm      - Bot conferma esecuzione (AUTH)`);
+  console.log(`   GET  /api/stats            - Statistiche dettagliate`);
+  console.log(`   GET  /api/trend-status     - Stato rapido trend (AUTH)`);
   console.log(`   POST /api/reset            - Reset completo`);
-  console.log(`   GET  /api/debug            - Debug info`);
-  console.log(`   POST /api/verify-bot       - Verifica chiave bot\n`);
-  
+  console.log(`   GET  /api/debug            - Debug stato interno`);
+  console.log(`   POST /api/verify-bot       - Verifica chiave bot`);
   console.log(`🔐 SICUREZZA ATTIVA:`);
   console.log(`   Controller Key: ${CONTROLLER_KEY}`);
-  console.log(`   Bot Keys: ${BOT_KEYS.join(', ')}\n`);
-  
-  console.log(`💡 STATO INIZIALE:`);
-  console.log(`   Trend: ${currentTrend.direction}`);
-  console.log(`   Active: ${currentTrend.isActive}`);
-  console.log(`   ForceClose: ${currentTrend.forceClose}\n`);
-  
-  console.log(`✅ Server pronto per ricevere richieste!\n`);
+  console.log(`   Bot Key:       ${BOT_KEY}`);
+  console.log(`💡 FUNZIONALITÀ:`);
+  console.log(`   ✅ Trend Control (BUY/SELL/ENTRAMBI/NONE)`);
+  console.log(`   ✅ Start/Stop Trading`);
+  console.log(`   ✅ Force Close`);
+  console.log(`   ✨ Remote Trade Signals (auto-expire 5s)`);
+  console.log(`   ✨ Break Even Close Command`);
+  console.log(`🤖 Target Bot: Prop Leader - Flagship`);
 });
 
 // Pulizia automatica
@@ -491,5 +501,13 @@ setInterval(() => {
   
   if (connectedBots.size !== botsBefore) {
     console.log(`🧹 Pulizia bot disconnessi: rimossi ${botsBefore - connectedBots.size} bot inattivi`);
+  }
+
+  // ✨ Pulizia remote trades scaduti
+  const now = new Date();
+  const tradesBefore = remoteTrades.length;
+  remoteTrades = remoteTrades.filter(t => t.expires > now);
+  if (remoteTrades.length !== tradesBefore) {
+    console.log(`🧹 Pulizia remote trades scaduti: rimossi ${tradesBefore - remoteTrades.length}`);
   }
 }, 6 * 60 * 60 * 1000);
