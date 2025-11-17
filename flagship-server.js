@@ -24,7 +24,7 @@ let controllerAccountInfo = {};      // ultima informazione account Controller
 
 // Chiavi di sicurezza
 const CONTROLLER_KEY = "controller_flagship_key_2025";
-const BOT_KEY = "bot_flagship_access_2025_secure";
+const BOT_KEY = "bot_flagship_access_2026_secure_alpha92";
 
 // Middleware per autenticazione Bot
 function authenticateBot(req, res, next) {
