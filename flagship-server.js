@@ -37,7 +37,10 @@ let controllerAccountInfo = {};
 
 // Chiavi di sicurezza
 const CONTROLLER_KEY = "controller_flagship_key_2025";
-const BOT_KEY = "bot_flagship_access_2026_secure_alpha92";
+const BOT_KEYS = [
+  "bot_flagship_access_2026_secure_alpha92",
+  "bot_flagship_access_2025_secure"
+];
 
 // Middleware per autenticazione Bot
 function authenticateBot(req, res, next) {
@@ -45,9 +48,9 @@ function authenticateBot(req, res, next) {
   const { botkey } = req.query;
   
   console.log(`🔑 Bot Key ricevuta: ${botkey || 'NESSUNA'}`);
-  console.log(`🔑 Bot Key attesa: ${BOT_KEY}`);
+  console.log(`🔑 Bot Keys valide: ${BOT_KEYS.join(', ')}`);
   
-  if (!botkey || botkey !== BOT_KEY) {
+  if (!botkey || !BOT_KEYS.includes(botkey)) {
     console.log(`❌ Autenticazione FALLITA - Key non valida`);
     return res.status(401).json({ 
       error: 'Unauthorized', 
@@ -55,16 +58,17 @@ function authenticateBot(req, res, next) {
     });
   }
   
-  console.log(`✅ Autenticazione RIUSCITA`);
+  console.log(`✅ Autenticazione RIUSCITA con chiave: ${botkey}`);
   
   const botId = req.ip + '_' + (req.headers['user-agent'] || 'unknown');
   connectedBots.set(botId, {
     lastAccess: new Date(),
     ip: req.ip,
-    userAgent: req.headers['user-agent']
+    userAgent: req.headers['user-agent'],
+    botKey: botkey // Salva quale chiave è stata usata
   });
   
-  console.log(`🤖 Bot registrato: ${botId.substring(0, 30)}...`);
+  console.log(`🤖 Bot registrato: ${botId}`);
   
   next();
 }
@@ -346,7 +350,8 @@ app.get('/api/stats', (req, res) => {
     connectedBots: Array.from(connectedBots.entries()).map(([id, data]) => ({
       id: id.substr(0, 20) + '...',
       lastAccess: data.lastAccess,
-      ip: data.ip
+      ip: data.ip,
+      botKey: data.botKey
     })),
     serverUptime: process.uptime()
   });
@@ -401,8 +406,8 @@ app.post('/api/verify-bot', (req, res) => {
   
   const { botkey } = req.body;
   
-  if (botkey === BOT_KEY) {
-    console.log(`✅ Bot key valida`);
+  if (BOT_KEYS.includes(botkey)) {
+    console.log(`✅ Bot key valida: ${botkey}`);
     res.json({ 
       status: 'authorized',
       message: 'Bot key valid',
@@ -410,7 +415,7 @@ app.post('/api/verify-bot', (req, res) => {
       currentTrend: currentTrend
     });
   } else {
-    console.log(`❌ Bot key non valida`);
+    console.log(`❌ Bot key non valida: ${botkey}`);
     res.status(401).json({ 
       status: 'unauthorized',
       message: 'Invalid bot key'
@@ -456,7 +461,7 @@ app.listen(PORT, () => {
   
   console.log(`🔐 SICUREZZA ATTIVA:`);
   console.log(`   Controller Key: ${CONTROLLER_KEY}`);
-  console.log(`   Bot Key:        ${BOT_KEY}\n`);
+  console.log(`   Bot Keys: ${BOT_KEYS.join(', ')}\n`);
   
   console.log(`💡 STATO INIZIALE:`);
   console.log(`   Trend: ${currentTrend.direction}`);
