@@ -44,8 +44,8 @@ function authenticateBot(req, res, next) {
   console.log(`🔐 Autenticazione Bot...`);
   const { botkey } = req.query;
   
-  console.log(`🔑 Bot Key ricevuta: ${botkey ? botkey.substring(0, 20) + '...' : 'NESSUNA'}`);
-  console.log(`🔑 Bot Key attesa: ${BOT_KEY.substring(0, 20)}...`);
+  console.log(`🔑 Bot Key ricevuta: ${botkey ? botkey : 'NESSUNA'}`);
+  console.log(`🔑 Bot Key attesa: ${BOT_KEY);
   
   if (!botkey || botkey !== BOT_KEY) {
     console.log(`❌ Autenticazione FALLITA - Key non valida`);
