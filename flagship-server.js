@@ -272,8 +272,8 @@ app.get('/api/getcommands', authenticateBot, (req, res) => {
   const { lastsync } = req.query;
   
   // Pulizia trade scaduti
-  const now = new Date();
-  remoteTrades = remoteTrades.filter(t => t.expires > now);
+  /*const now = new Date();
+  remoteTrades = remoteTrades.filter(t => t.expires > now);*/
   
   const response = {
     currentTrend: currentTrend,
