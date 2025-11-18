@@ -481,16 +481,31 @@ app.listen(PORT, () => {
   console.log(`🤖 Target Bot: Prop Leader - Flagship`);
 });
 
-// Pulizia automatica
+//+------------------------------------------------------------------+
+//| Pulizia automatica periodica                                     |
+//+------------------------------------------------------------------+
 setInterval(() => {
+  // 1. Pulizia remoteTrades (ogni 10 secondi)
+  const now = new Date();
+  const beforeTrades = remoteTrades.length;
+  remoteTrades = remoteTrades.filter(t => !t.executed && t.expires > now);
+  
+  if (remoteTrades.length !== beforeTrades) {
+    console.log(`🧹 Cleanup remoteTrades: ${beforeTrades} -> ${remoteTrades.length}`);
+  }
+}, 10000);
+
+setInterval(() => {
+  // 2. Pulizia recentCommands (ogni 6 ore)
   const cutoff = new Date(Date.now() - 6 * 60 * 60 * 1000);
   const before = recentCommands.length;
   recentCommands = recentCommands.filter(cmd => cmd.timestamp > cutoff);
   
   if (recentCommands.length !== before) {
-    console.log(`🧹 Pulizia automatica: rimossi ${before - recentCommands.length} comandi vecchi`);
+    console.log(`🧹 Pulizia comandi vecchi: rimossi ${before - recentCommands.length}`);
   }
   
+  // 3. Pulizia bot inattivi
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
   const botsBefore = connectedBots.size;
   connectedBots.forEach((data, botId) => {
@@ -500,14 +515,6 @@ setInterval(() => {
   });
   
   if (connectedBots.size !== botsBefore) {
-    console.log(`🧹 Pulizia bot disconnessi: rimossi ${botsBefore - connectedBots.size} bot inattivi`);
-  }
-
-  // ✨ Pulizia remote trades scaduti
-  const now = new Date();
-  const tradesBefore = remoteTrades.length;
-  remoteTrades = remoteTrades.filter(t => t.expires > now);
-  if (remoteTrades.length !== tradesBefore) {
-    console.log(`🧹 Pulizia remote trades scaduti: rimossi ${tradesBefore - remoteTrades.length}`);
+    console.log(`🧹 Pulizia bot disconnessi: rimossi ${botsBefore - connectedBots.size}`);
   }
 }, 6 * 60 * 60 * 1000);
