@@ -278,7 +278,7 @@ app.get('/api/getcommands', authenticateBot, (req, res) => {
   const response = {
     currentTrend: currentTrend,
     recentCommands: [],
-    remoteTrades: remoteTrades.filter(t => !t.executed), // Solo non eseguiti
+    remoteTrades: remoteTrades, // Solo non eseguiti
     breakEvenCommand: breakEvenCommand,
     controllerAccount: controllerAccountInfo,
     serverTime: Date.now()
